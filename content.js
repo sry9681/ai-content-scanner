@@ -7,6 +7,10 @@
 (() => {
   "use strict";
 
+  // Prevent duplicate execution when popup re-injects content.js
+  if (window.__acsContentScriptLoaded) return;
+  window.__acsContentScriptLoaded = true;
+
   // ── Known AI tool signatures found in EXIF / XMP / IPTC metadata ──
   const AI_SOFTWARE_SIGNATURES = [
     // Image generators
@@ -304,15 +308,31 @@
   }
 
   // ====================================================================
+  //  VERDICT PRIORITY (higher = stronger, never downgrade)
+  // ====================================================================
+
+  const VERDICT_PRIORITY = {
+    no_metadata: 0,
+    likely_real: 1,
+    uncertain: 2,
+    likely_ai: 3,
+    ai_detected: 4,
+  };
+
+  function upgradeVerdict(current, next) {
+    return (VERDICT_PRIORITY[next] ?? 0) > (VERDICT_PRIORITY[current] ?? 0) ? next : current;
+  }
+
+  // ====================================================================
   //  CONFIDENCE CALCULATION
   // ====================================================================
 
   function calculateImageConfidence(signals) {
     const weights = [];
-    if (signals.c2pa) weights.push(0.95);
-    if (signals.exifSignature) weights.push(0.90);
+    if (signals.c2pa) weights.push(0.99);
+    if (signals.synthid) weights.push(0.98);
     if (signals.iptc) weights.push(0.92);
-    if (signals.synthid) weights.push(0.90);
+    if (signals.exifSignature) weights.push(0.90);
     if (signals.urlPattern) weights.push(0.65);
     if (signals.altText) weights.push(0.55);
 
@@ -371,105 +391,105 @@
       exif: {},
     };
 
+    // ── Buffer-dependent checks (C2PA, EXIF, SynthID) ──
     const buffer = await fetchImageBytes(src);
-    if (!buffer) {
-      result.confidence = 0;
-      result.reasons.push("Could not fetch image data (CORS blocked).");
-      return result;
-    }
+    if (buffer) {
+      result.metadata.fileSize = formatBytes(buffer.byteLength);
 
-    result.metadata.fileSize = formatBytes(buffer.byteLength);
-
-    // 1) C2PA / JUMBF — only flag as AI when claim_generator indicates an AI tool
-    // Cameras and phones also embed C2PA for provenance; we treat those as non-AI.
-    const c2pa = detectC2PA(buffer);
-    if (c2pa.found) {
-      result.fingerprint.c2pa = "JUMBF superbox detected";
-      let c2paClassified = false;
-      if (c2pa.claimGenerator) {
-        result.fingerprint.claimGenerator = c2pa.claimGenerator;
-        const genLower = c2pa.claimGenerator.toLowerCase();
-        const isCamera = C2PA_CLAIM_CAMERA.some((s) => genLower.includes(s));
-        const isAi = C2PA_CLAIM_AI.some((s) => genLower.includes(s));
-        if (isAi) {
-          signals.c2pa = true;
-          result.verdict = "ai_detected";
-          result.reasons.push("C2PA Content Credentials found — provenance from an AI tool.");
-          result.source = result.source || c2pa.claimGenerator;
-          c2paClassified = true;
-        } else if (isCamera) {
-          result.reasons.push("C2PA Content Credentials from capture device (camera/phone) — not AI-generated.");
-          result.verdict = "likely_real";
-          result.source = result.source || c2pa.claimGenerator;
-          c2paClassified = true;
-        }
-      }
-      if (!c2paClassified && c2pa.decodedText) {
-        const blobLower = c2pa.decodedText.toLowerCase();
-        for (const ai of C2PA_CLAIM_AI) {
-          if (blobLower.includes(ai)) {
+      // 1) C2PA / JUMBF — only flag as AI when claim_generator indicates an AI tool
+      // Cameras and phones also embed C2PA for provenance; we treat those as non-AI.
+      const c2pa = detectC2PA(buffer);
+      if (c2pa.found) {
+        result.fingerprint.c2pa = "JUMBF superbox detected";
+        let c2paClassified = false;
+        if (c2pa.claimGenerator) {
+          result.fingerprint.claimGenerator = c2pa.claimGenerator;
+          const genLower = c2pa.claimGenerator.toLowerCase();
+          const isCamera = C2PA_CLAIM_CAMERA.some((s) => genLower.includes(s));
+          const isAi = C2PA_CLAIM_AI.some((s) => genLower.includes(s));
+          if (isAi) {
             signals.c2pa = true;
-            result.verdict = "ai_detected";
-            result.reasons.push("C2PA Content Credentials found — AI tool name in manifest.");
-            result.source = result.source || ai;
+            result.verdict = upgradeVerdict(result.verdict, "ai_detected");
+            result.reasons.push("C2PA Content Credentials found — provenance from an AI tool.");
+            result.source = result.source || c2pa.claimGenerator;
             c2paClassified = true;
-            break;
+          } else if (isCamera) {
+            result.reasons.push("C2PA Content Credentials from capture device (camera/phone) — not AI-generated.");
+            result.verdict = upgradeVerdict(result.verdict, "likely_real");
+            result.source = result.source || c2pa.claimGenerator;
+            c2paClassified = true;
           }
         }
-      }
-      if (!c2paClassified) {
-        result.reasons.push(
-          c2pa.claimGenerator
-            ? "C2PA Content Credentials present; source unknown (not classified as AI)."
-            : "C2PA Content Credentials present; no claim generator (not classified as AI)."
-        );
-        result.verdict = "uncertain";
-        if (c2pa.claimGenerator) result.source = result.source || c2pa.claimGenerator;
-      }
-      if (c2pa.signer) result.fingerprint.signer = c2pa.signer;
-    }
-
-    // 2) EXIF / XMP + metadata extraction
-    const meta = parseMetadata(buffer);
-    result.exif = { ...meta.exifFields };
-
-    if (meta.software) {
-      signals.exifSignature = true;
-      result.verdict = "ai_detected";
-      const displayName = getSourceName(meta.software);
-      result.reasons.push("AI tool signature in metadata: \"" + escapeHtml(displayName) + "\".");
-      result.fingerprint.software = meta.software;
-      result.source = result.source || displayName;
-      result.exif["AI Software"] = displayName;
-    }
-
-    if (meta.iptcDigitalSource) {
-      signals.iptc = true;
-      result.verdict = "ai_detected";
-      result.reasons.push("IPTC DigitalSourceType: " + escapeHtml(meta.iptcDigitalSource));
-      result.fingerprint.iptcDigitalSource = meta.iptcDigitalSource;
-    }
-
-    // 3) SynthID watermark detection (FFT phase analysis)
-    //    Use the already-fetched buffer (CORS-safe) instead of the img element
-    if (window.__acsSynthID && buffer) {
-      try {
-        const synthResult = await window.__acsSynthID.detectSynthIDWatermark(buffer);
-        if (synthResult.detected) {
-          signals.synthid = true;
-          result.verdict = "ai_detected";
-          result.reasons.push(
-            "SynthID watermark detected via spectral analysis" +
-            (synthResult.codebook ? " (" + synthResult.codebook + ")" : "") +
-            "."
-          );
-          result.fingerprint.synthid = "SynthID watermark confirmed";
-          result.source = result.source || synthResult.source;
+        if (!c2paClassified && c2pa.decodedText) {
+          const blobLower = c2pa.decodedText.toLowerCase();
+          for (const ai of C2PA_CLAIM_AI) {
+            if (blobLower.includes(ai)) {
+              signals.c2pa = true;
+              result.verdict = upgradeVerdict(result.verdict, "ai_detected");
+              result.reasons.push("C2PA Content Credentials found — AI tool name in manifest.");
+              result.source = result.source || ai;
+              c2paClassified = true;
+              break;
+            }
+          }
         }
-      } catch (e) {
-        // SynthID detection failed silently — continue with other signals
+        if (!c2paClassified) {
+          result.reasons.push(
+            c2pa.claimGenerator
+              ? "C2PA Content Credentials present; source unknown (not classified as AI)."
+              : "C2PA Content Credentials present; no claim generator (not classified as AI)."
+          );
+          result.verdict = upgradeVerdict(result.verdict, "uncertain");
+          if (c2pa.claimGenerator) result.source = result.source || c2pa.claimGenerator;
+        }
+        if (c2pa.signer) result.fingerprint.signer = c2pa.signer;
       }
+
+      // 2) EXIF / XMP + metadata extraction
+      const meta = parseMetadata(buffer);
+      result.exif = { ...meta.exifFields };
+
+      if (meta.software) {
+        signals.exifSignature = true;
+        result.verdict = upgradeVerdict(result.verdict, "ai_detected");
+        const displayName = getSourceName(meta.software);
+        result.reasons.push("AI tool signature in metadata: \"" + escapeHtml(displayName) + "\".");
+        result.fingerprint.software = meta.software;
+        result.source = result.source || displayName;
+        result.exif["AI Software"] = displayName;
+      }
+
+      if (meta.iptcDigitalSource) {
+        signals.iptc = true;
+        result.verdict = upgradeVerdict(result.verdict, "ai_detected");
+        result.reasons.push("IPTC DigitalSourceType: " + escapeHtml(meta.iptcDigitalSource));
+        result.fingerprint.iptcDigitalSource = meta.iptcDigitalSource;
+      }
+
+      // 3) SynthID watermark detection (FFT phase analysis)
+      if (window.__acsSynthID) {
+        try {
+          const synthResult = await window.__acsSynthID.detectSynthIDWatermark(buffer);
+          if (synthResult.detected) {
+            signals.synthid = true;
+            result.verdict = upgradeVerdict(result.verdict, "ai_detected");
+            result.reasons.push(
+              "SynthID watermark detected via spectral analysis" +
+              (synthResult.codebook ? " (" + synthResult.codebook + ")" : "") +
+              "."
+            );
+            result.fingerprint.synthid = "SynthID watermark confirmed";
+            result.source = result.source || synthResult.source;
+          }
+        } catch (e) {
+          // SynthID detection failed silently — continue with other signals
+        }
+      }
+    } else {
+      result.reasons.push("Could not fetch image data (CORS blocked).");
     }
+
+    // ── DOM-based checks (no buffer needed) ──
 
     // 4) URL patterns
     const urlLower = src.toLowerCase();
@@ -484,7 +504,7 @@
     for (const pattern of aiHostPatterns) {
       if (urlLower.includes(pattern)) {
         signals.urlPattern = true;
-        if (result.verdict === "no_metadata") result.verdict = "likely_ai";
+        result.verdict = upgradeVerdict(result.verdict, "likely_ai");
         result.reasons.push("Image URL contains AI service pattern: \"" + escapeHtml(pattern) + "\".");
         result.fingerprint.urlPattern = pattern;
         result.source = result.source || getSourceName(pattern);
@@ -503,12 +523,27 @@
       for (const pattern of aiAltPatterns) {
         if (altText.includes(pattern)) {
           signals.altText = true;
-          if (result.verdict === "no_metadata") result.verdict = "likely_ai";
+          result.verdict = upgradeVerdict(result.verdict, "likely_ai");
           result.reasons.push("Alt/title text mentions AI: \"" + escapeHtml(pattern) + "\".");
           break;
         }
       }
     }
+
+    // Sort reasons: strongest signals first (C2PA AI > SynthID > IPTC > EXIF > URL > alt text > info)
+    const REASON_PRIORITY = [
+      "C2PA Content Credentials found",
+      "SynthID watermark detected",
+      "IPTC DigitalSourceType",
+      "AI tool signature in metadata",
+      "Image URL contains AI",
+      "Alt/title text mentions AI",
+    ];
+    result.reasons.sort((a, b) => {
+      const pa = REASON_PRIORITY.findIndex((p) => a.startsWith(p));
+      const pb = REASON_PRIORITY.findIndex((p) => b.startsWith(p));
+      return (pa === -1 ? 99 : pa) - (pb === -1 ? 99 : pb);
+    });
 
     result.confidence = calculateImageConfidence(signals);
     return result;
@@ -545,7 +580,7 @@
     for (const pattern of aiVideoPatterns) {
       if (urlLower.includes(pattern)) {
         signals.urlPattern = true;
-        result.verdict = "likely_ai";
+        result.verdict = upgradeVerdict(result.verdict, "likely_ai");
         result.reasons.push("Video URL matches AI video tool: \"" + escapeHtml(pattern) + "\".");
         result.fingerprint.urlPattern = pattern;
         result.source = getSourceName(pattern);
@@ -563,7 +598,7 @@
       for (const mention of aiMentions) {
         if (parentText.includes(mention)) {
           signals.contextMention = true;
-          if (result.verdict === "no_metadata") result.verdict = "likely_ai";
+          result.verdict = upgradeVerdict(result.verdict, "likely_ai");
           result.reasons.push("Surrounding text mentions: \"" + escapeHtml(mention) + "\".");
           result.source = result.source || getSourceName(mention);
           break;

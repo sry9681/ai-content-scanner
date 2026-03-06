@@ -6,6 +6,7 @@
 - [How SynthID Watermarking Works](#how-synthid-watermarking-works)
 - [Reverse Engineering: The Spectral Codebook](#reverse-engineering-the-spectral-codebook)
 - [Our Detection Algorithm](#our-detection-algorithm)
+- [Detection Signal Hierarchy](#detection-signal-hierarchy)
 - [Test Images](#test-images)
 - [Detection Tiers Tested](#detection-tiers-tested)
 - [Test Results](#test-results)
@@ -118,13 +119,14 @@ The extension uses **Tier A: Raw FFT phase + annular magnitude ratio** — the s
 
 6. **Annular magnitude ratio**: For each carrier bin, sample 24 points around a ring at the same radius (same distance from DC) but different angles. Compare the carrier's magnitude to the median of these ring samples. A watermarked carrier will have significantly higher magnitude than its neighbors on the ring.
 
-7. **Detection decision**:
+7. **Detection decision** (three paths, any triggers detection):
    - **Strong**: 8+ of 10 carriers phase-matched AND average magnitude ratio > 5x → high confidence (0.80–0.95)
-   - **Moderate**: 6+ carriers matched AND average phase > 0.55 AND magnitude ratio > 2x → lower confidence (0.45–0.75)
+   - **Moderate**: 6+ carriers matched AND average phase > 0.55 AND magnitude ratio > 3x → moderate confidence (0.45–0.75)
+   - **Phase-strong**: 6+ carriers with >0.9 phase match (strict) AND average phase > 0.75 → high confidence. This path catches content-rich images where the watermark magnitude doesn't stand out above natural image frequencies, but the phase alignment is unmistakable.
 
 ### Implementation
 
-The algorithm is implemented in pure JavaScript in `synthid-detect.js` (344 lines, zero dependencies). It uses:
+The algorithm is implemented in pure JavaScript in `synthid-detect.js` (~390 lines, zero dependencies). It uses:
 - Hand-rolled radix-2 Cooley-Tukey FFT (1D, applied row-then-column for 2D)
 - Canvas API to resize and extract pixel data
 - `window.__acsSynthID.detectSynthIDWatermark()` as the public interface
@@ -254,6 +256,15 @@ Tier A requires only:
 
 No external dependencies. No blur kernels. No wavelet transforms. This is critical for a Chrome extension where bundle size and simplicity matter.
 
+### Multi-crop strategy
+
+For non-square images, the detector tries multiple 512x512 crops to maximize the chance of preserving the watermark signal:
+1. **Center-square resize**: Crop the largest centered square, then resize to 512x512
+2. **Center-direct**: Take a direct 512x512 crop from the center (no resize)
+3. **Edge crop**: Take a 512x512 crop from the bottom or right edge
+
+Detection succeeds if any crop produces a strong match, with early exit when confidence > 0.9.
+
 ### 5. The one false negative is acceptable
 The single missed image (`sample_watermarked.png`) is a 768x1365 portrait that loses its watermark signal when center-cropped and squeezed to 512x512. This is an inherent limitation of frequency-domain analysis: aggressive non-uniform scaling destroys the carrier frequency alignment. Real-world Gemini images are typically square or near-square (1024x1024, 1536x1536), where this isn't an issue.
 
@@ -262,6 +273,78 @@ Despite catching the difficult `sample_watermarked.png`, Tiers B and C produce t
 
 ### Why not Tier D?
 The combined vote reduces FPs compared to B alone, but still has 2 FPs. The added complexity of running two analysis passes isn't justified when Tier A alone achieves 0 FP.
+
+---
+
+## Detection Signal Hierarchy
+
+SynthID is one of several detection signals used by the extension. Each signal carries a confidence weight, and signals are combined using independent probability:
+
+```
+combined = 1 - ∏(1 - wᵢ)
+```
+
+### Signal Weights
+
+| Priority | Signal | Weight | Type | Survives stripping? |
+|----------|--------|--------|------|---------------------|
+| 1 | C2PA (AI tool) | 0.99 | First-party cryptographic attestation | No — trivially removable |
+| 2 | SynthID | 0.98 | Pixel-level watermark (spectral analysis) | Yes — survives re-encoding, cropping, screenshots |
+| 3 | IPTC DigitalSourceType | 0.92 | Standard metadata field | No |
+| 4 | EXIF/XMP AI signature | 0.90 | Tool name in metadata | No |
+| 5 | URL pattern | 0.65 | Circumstantial (AI service domain) | N/A |
+| 6 | Alt text | 0.55 | Circumstantial (DOM text) | N/A |
+
+### Why C2PA outranks SynthID
+
+When C2PA is present with an AI tool signature, the generating tool itself is declaring "I made this" with cryptographic provenance — a first-party attestation of origin. SynthID, while extremely reliable, is detected through reverse-engineered spectral analysis — a third-party observation. The distinction:
+
+- **C2PA AI**: The tool signed a statement saying "I generated this" → certainty of origin
+- **SynthID**: We detected a watermark pattern consistent with known carriers → high confidence but inferred
+
+However, SynthID is far more **robust** than C2PA. C2PA metadata can be stripped by saving, re-encoding, or screenshotting the image. SynthID survives all of these. In practice, SynthID will fire on many images where C2PA has been removed.
+
+### Verdict Priority
+
+The extension assigns one of five verdicts to each scanned item. Verdicts follow a strict priority — a stronger verdict can never be downgraded by a weaker signal:
+
+```
+no_metadata (0) < likely_real (1) < uncertain (2) < likely_ai (3) < ai_detected (4)
+```
+
+This prevents edge cases like:
+- C2PA camera detection (`likely_real`) overwriting a SynthID detection (`ai_detected`)
+- An alt text miss resetting a metadata-confirmed verdict
+
+Each signal can only **upgrade** the verdict. For example, if SynthID sets `ai_detected` and then C2PA detects a camera signature, the verdict stays `ai_detected` — the watermark evidence outweighs the camera provenance claim.
+
+### Reason Display Order
+
+When multiple signals fire, the popup displays reasons sorted by signal strength (strongest first):
+
+1. C2PA Content Credentials (AI tool)
+2. SynthID watermark detection
+3. IPTC DigitalSourceType
+4. EXIF/XMP AI tool signature
+5. URL pattern match
+6. Alt text match
+
+This ensures the most definitive evidence is always visible first in the collapsed result view.
+
+### Combined Score Examples
+
+| Signals present | Confidence | Verdict |
+|-----------------|------------|---------|
+| C2PA AI only | 99% | ai_detected |
+| SynthID only | 98% | ai_detected |
+| C2PA AI + SynthID | 99% | ai_detected |
+| EXIF + IPTC | 99% | ai_detected |
+| SynthID + EXIF | 99% | ai_detected |
+| URL pattern only | 65% | likely_ai |
+| Alt text only | 55% | likely_ai |
+| URL + alt text | 84% | likely_ai |
+| SynthID + URL + alt text | 99% | ai_detected |
+| No signals | 5% | no_metadata |
 
 ---
 
@@ -292,18 +375,21 @@ const CODEBOOKS = [
     label: "Gemini / Imagen (2024-2025)",
     carriers: [
       { fy: -14,  fx: -14,  phase:  1.4409 },
-      // ... 9 more carriers
+      // ... 9 more carriers (conjugate pairs)
     ],
     thresholds: {
-      strongPhaseMatched: 8,
-      strongMagRatio: 5.0,
-      moderatePhaseMatched: 6,
-      moderatePhaseAvg: 0.55,
-      moderateMagRatio: 2.0,
-      phaseMatchCutoff: 0.7,
+      strongPhaseMatched: 8,     // 8/10 carriers at >0.7 match
+      strongMagRatio: 5.0,       // carrier magnitude 5x ring median
+      moderatePhaseMatched: 6,   // 6/10 carriers at >0.7 match
+      moderatePhaseAvg: 0.55,    // average phase score
+      moderateMagRatio: 3.0,     // carrier magnitude 3x ring median
+      phaseStrongMatched90: 6,   // 6/10 carriers at >0.9 match (strict)
+      phaseStrongAvg: 0.75,      // average phase for phase-strong path
+      phaseMatchCutoff: 0.7,     // threshold for "matched" carrier
+      phaseMatchCutoffStrict: 0.9, // strict threshold for phase-strong path
     },
   },
-  // Future versions go here
+  // Future codebook versions go here
 ];
 ```
 
