@@ -40,8 +40,11 @@
         strongMagRatio: 5.0,
         moderatePhaseMatched: 6,
         moderatePhaseAvg: 0.55,
-        moderateMagRatio: 2.0,
+        moderateMagRatio: 3.0,
+        phaseStrongMatched90: 6,
+        phaseStrongAvg: 0.75,
         phaseMatchCutoff: 0.7,
+        phaseMatchCutoffStrict: 0.9,
       },
     },
   ];
@@ -144,49 +147,80 @@
     return out;
   }
 
-  // ── Image → grayscale pixel array via OffscreenCanvas ──
+  // ── Image → grayscale crop arrays via Canvas ──
+  // Returns an array of Float64Array grayscale crops to test.
+  // For square images: one center crop. For non-square (aspect > 1.3):
+  // also tries direct 512x512 crops from center and edge regions,
+  // which preserves the watermark's frequency structure better.
 
-  function imageToGrayscale(imgElement) {
-    const canvas = document.createElement("canvas");
-    canvas.width = SIZE;
-    canvas.height = SIZE;
+  function canvasToGray(canvas) {
     const ctx = canvas.getContext("2d", { willReadFrequently: true });
-    if (!ctx) return null;
-
-    // Center-crop to square before drawing
-    const natW = imgElement.naturalWidth || imgElement.width;
-    const natH = imgElement.naturalHeight || imgElement.height;
-    const side = Math.min(natW, natH);
-    const sx = (natW - side) / 2;
-    const sy = (natH - side) / 2;
-
-    ctx.drawImage(imgElement, sx, sy, side, side, 0, 0, SIZE, SIZE);
     const imageData = ctx.getImageData(0, 0, SIZE, SIZE);
-    const pixels = imageData.data; // RGBA
-
+    const pixels = imageData.data;
     const gray = new Float64Array(SIZE * SIZE);
     for (let i = 0; i < SIZE * SIZE; i++) {
       const off = i * 4;
-      // ITU-R BT.601 luma
       gray[i] = 0.299 * pixels[off] + 0.587 * pixels[off + 1] + 0.114 * pixels[off + 2];
     }
     return gray;
   }
 
-  // Also support ArrayBuffer input (for images fetched as bytes)
-  function bufferToGrayscale(buffer) {
+  function imageToGrayCrops(imgElement) {
+    const natW = imgElement.naturalWidth || imgElement.width;
+    const natH = imgElement.naturalHeight || imgElement.height;
+
+    const canvas = document.createElement("canvas");
+    canvas.width = SIZE;
+    canvas.height = SIZE;
+    const ctx = canvas.getContext("2d", { willReadFrequently: true });
+    if (!ctx) return [];
+
+    const crops = [];
+
+    // Crop 1: center-crop to square, resize to 512x512
+    const side = Math.min(natW, natH);
+    const sx = (natW - side) / 2;
+    const sy = (natH - side) / 2;
+    ctx.drawImage(imgElement, sx, sy, side, side, 0, 0, SIZE, SIZE);
+    crops.push(canvasToGray(canvas));
+
+    // For non-square images (aspect > 1.3), try direct 512x512 crops
+    const aspect = Math.max(natW, natH) / Math.min(natW, natH);
+    if (aspect > 1.3 && Math.min(natW, natH) >= SIZE) {
+      // Center direct crop
+      const cy = (natH - SIZE) / 2;
+      const cx = (natW - SIZE) / 2;
+      ctx.clearRect(0, 0, SIZE, SIZE);
+      ctx.drawImage(imgElement, cx, cy, SIZE, SIZE, 0, 0, SIZE, SIZE);
+      crops.push(canvasToGray(canvas));
+
+      // Edge crop (bottom for tall images, right for wide)
+      ctx.clearRect(0, 0, SIZE, SIZE);
+      if (natH > natW) {
+        ctx.drawImage(imgElement, cx, natH - SIZE, SIZE, SIZE, 0, 0, SIZE, SIZE);
+      } else {
+        ctx.drawImage(imgElement, natW - SIZE, cy, SIZE, SIZE, 0, 0, SIZE, SIZE);
+      }
+      crops.push(canvasToGray(canvas));
+    }
+
+    return crops;
+  }
+
+  // ArrayBuffer input (for images fetched as bytes)
+  function bufferToGrayCrops(buffer) {
     return new Promise((resolve) => {
       const blob = new Blob([buffer]);
       const url = URL.createObjectURL(blob);
       const img = new Image();
       img.onload = () => {
-        const gray = imageToGrayscale(img);
+        const crops = imageToGrayCrops(img);
         URL.revokeObjectURL(url);
-        resolve(gray);
+        resolve(crops);
       };
       img.onerror = () => {
         URL.revokeObjectURL(url);
-        resolve(null);
+        resolve([]);
       };
       img.src = url;
     });
@@ -257,21 +291,31 @@
 
     const avgPhase = phaseScores.reduce((a, b) => a + b, 0) / phaseScores.length;
     const phaseMatched = phaseScores.filter((s) => s > t.phaseMatchCutoff).length;
+    const phaseMatched90 = phaseScores.filter((s) => s > t.phaseMatchCutoffStrict).length;
     const avgMag = magRatios.length > 0
       ? magRatios.reduce((a, b) => a + b, 0) / magRatios.length
       : 0;
 
+    // Three detection paths:
+    // Strong: overwhelming magnitude + phase (simple/synthetic images)
     const strong = phaseMatched >= t.strongPhaseMatched && avgMag > t.strongMagRatio;
+    // Moderate: good phase + some magnitude anomaly
     const moderate = phaseMatched >= t.moderatePhaseMatched &&
                      avgPhase > t.moderatePhaseAvg &&
                      avgMag > t.moderateMagRatio;
-    const detected = strong || moderate;
+    // Phase-strong: very high phase precision without magnitude anomaly
+    // (catches content-rich images where natural frequencies mask the watermark magnitude)
+    const phaseStrong = phaseMatched90 >= t.phaseStrongMatched90 &&
+                        avgPhase > t.phaseStrongAvg;
+    const detected = strong || moderate || phaseStrong;
 
     let confidence = 0;
     if (strong) {
       confidence = Math.min(0.95, 0.6 + avgPhase * 0.2 + Math.min(avgMag / 50, 0.15));
     } else if (moderate) {
       confidence = Math.min(0.75, 0.3 + avgPhase * 0.3 + Math.min(avgMag / 10, 0.15));
+    } else if (phaseStrong) {
+      confidence = Math.min(0.80, 0.3 + avgPhase * 0.4 + phaseMatched90 * 0.02);
     }
 
     return {
@@ -294,32 +338,35 @@
    * @returns {Promise<{detected: boolean, confidence: number, source?: string, details?: object}>}
    */
   async function detectSynthIDWatermark(input) {
-    let gray = null;
+    let crops = [];
 
     if (input instanceof HTMLImageElement) {
-      // Skip tiny images — watermark won't survive
       const w = input.naturalWidth || input.width;
       const h = input.naturalHeight || input.height;
       if (w < 128 || h < 128) {
         return { detected: false, confidence: 0, reason: "image_too_small" };
       }
-      gray = imageToGrayscale(input);
+      crops = imageToGrayCrops(input);
     } else if (input instanceof ArrayBuffer || input instanceof Uint8Array) {
       const buf = input instanceof Uint8Array ? input.buffer : input;
-      gray = await bufferToGrayscale(buf);
+      crops = await bufferToGrayCrops(buf);
     }
 
-    if (!gray) {
+    if (crops.length === 0) {
       return { detected: false, confidence: 0, reason: "decode_failed" };
     }
 
-    // Test against all codebook versions, return best match
+    // Test each crop against all codebook versions, return best match
     let best = { detected: false, confidence: 0 };
-    for (const codebook of CODEBOOKS) {
-      const result = analyzeSpectrum(gray, codebook);
-      if (result.detected && result.confidence > best.confidence) {
-        best = result;
+    for (const gray of crops) {
+      for (const codebook of CODEBOOKS) {
+        const result = analyzeSpectrum(gray, codebook);
+        if (result.detected && result.confidence > best.confidence) {
+          best = result;
+        }
       }
+      // Early exit if strong detection found
+      if (best.detected && best.confidence > 0.9) break;
     }
 
     if (best.detected) {

@@ -48,18 +48,35 @@ SIZE = 512
 # ════════════════════════════════════════════════════════════════
 
 def prep_image(path):
-    """Load image, center-crop to square, resize to 512x512, return grayscale."""
+    """Load image, return list of 512x512 grayscale crops to test.
+    For square images: one center crop.
+    For non-square (aspect > 1.3): also direct 512x512 crops from center and edge."""
     img = cv2.imread(path)
     if img is None:
         raise ValueError(f"Cannot load: {path}")
     h, w = img.shape[:2]
+    crops = []
+
+    # Crop 1: center-crop to square, resize to 512x512
     side = min(h, w)
     y0 = (h - side) // 2
     x0 = (w - side) // 2
     cropped = img[y0:y0+side, x0:x0+side]
     resized = cv2.resize(cropped, (SIZE, SIZE))
-    gray = cv2.cvtColor(resized, cv2.COLOR_BGR2GRAY).astype(np.float32)
-    return gray
+    crops.append(cv2.cvtColor(resized, cv2.COLOR_BGR2GRAY).astype(np.float32))
+
+    # For non-square images, try direct 512x512 crops
+    aspect = max(h, w) / min(h, w)
+    if aspect > 1.3 and min(h, w) >= SIZE:
+        cy = (h - SIZE) // 2
+        cx = (w - SIZE) // 2
+        crops.append(cv2.cvtColor(img[cy:cy+SIZE, cx:cx+SIZE], cv2.COLOR_BGR2GRAY).astype(np.float32))
+        if h > w:
+            crops.append(cv2.cvtColor(img[h-SIZE:h, cx:cx+SIZE], cv2.COLOR_BGR2GRAY).astype(np.float32))
+        else:
+            crops.append(cv2.cvtColor(img[cy:cy+SIZE, w-SIZE:w], cv2.COLOR_BGR2GRAY).astype(np.float32))
+
+    return crops
 
 
 def phase_diff(actual, expected):
@@ -106,19 +123,27 @@ def tier_a_raw_fft(gray):
 
     avg_phase = float(np.mean(phase_scores))
     phase_matched = sum(1 for s in phase_scores if s > 0.7)
+    phase_matched_90 = sum(1 for s in phase_scores if s > 0.9)
     avg_mag = float(np.mean(mag_ratios))
 
-    # Detection: strong (clear watermark) or moderate (compressed/resized)
+    # Three detection paths:
+    # Strong: overwhelming magnitude + phase (simple/synthetic images)
     strong = phase_matched >= 8 and avg_mag > 5.0
-    moderate = phase_matched >= 6 and avg_phase > 0.55 and avg_mag > 2.0
-    detected = strong or moderate
+    # Moderate: good phase + clear magnitude anomaly
+    moderate = phase_matched >= 6 and avg_phase > 0.55 and avg_mag > 3.0
+    # Phase-strong: very high phase precision without magnitude anomaly
+    # (catches content-rich images where natural frequencies mask the watermark)
+    phase_strong = phase_matched_90 >= 6 and avg_phase > 0.75
+
+    detected = strong or moderate or phase_strong
 
     return {
         "phase_match": avg_phase,
         "phase_matched": phase_matched,
+        "phase_matched_90": phase_matched_90,
         "mag_ratio": avg_mag,
         "detected": detected,
-        "tier": "strong" if strong else ("moderate" if moderate else "none"),
+        "tier": "strong" if strong else ("moderate" if moderate else ("phase_str" if phase_strong else "none")),
     }
 
 
@@ -340,11 +365,22 @@ def main():
         print(f"  {'─'*5} {'─'*28} {'─'*5} {'─'*7} {'─'*35} {'─'*7}")
 
         tier_results = []
+        is_tier_a = "Raw FFT" in tier_name
         for label, name, path in all_images:
             try:
-                gray = prep_image(path)
+                crops = prep_image(path)
                 t0 = time.perf_counter()
-                r = tier_fn(gray)
+                if is_tier_a:
+                    # Multi-crop: test all crops, take best
+                    r = {"detected": False, "phase_match": 0}
+                    for gray in crops:
+                        candidate = tier_fn(gray)
+                        if candidate["detected"] and candidate.get("phase_match", 0) > r.get("phase_match", 0):
+                            r = candidate
+                    if not r["detected"]:
+                        r = tier_fn(crops[0])  # fallback to first crop for reporting
+                else:
+                    r = tier_fn(crops[0])
                 elapsed = (time.perf_counter() - t0) * 1000
 
                 det = r["detected"]

@@ -35,7 +35,7 @@ SynthID does **not** use simple LSB (Least Significant Bit) replacement. It uses
 
 ```
 ┌─────────────────────────────────────────────────────┐
-│              SynthID Encoder (at generation time)    │
+│             SynthID Encoder (at generation time)    │
 ├─────────────────────────────────────────────────────┤
 │                                                     │
 │  1. Select carrier frequencies in frequency space   │
@@ -46,18 +46,18 @@ SynthID does **not** use simple LSB (Least Significant Bit) replacement. It uses
 │     same model version (model-level key)            │
 │                                                     │
 │  3. Neural network encoder adds a learned noise     │
-│     pattern that embeds these carrier phases         │
-│     into the image without visible artifacts         │
+│     pattern that embeds these carrier phases        │
+│     into the image without visible artifacts        │
 │                                                     │
 ├─────────────────────────────────────────────────────┤
-│              Detection (what we do)                  │
+│             Detection (what we do)                  │
 ├─────────────────────────────────────────────────────┤
 │                                                     │
 │  1. Resize image to 512x512                         │
 │  2. Compute 2D FFT (Fast Fourier Transform)         │
-│  3. Check phase values at known carrier bins         │
-│  4. Compare magnitude at carriers vs background      │
-│  5. If phases match expected values → watermarked    │
+│  3. Check phase values at known carrier bins        │
+│  4. Compare magnitude at carriers vs background     │
+│  5. If phases match expected values → watermarked   │
 │                                                     │
 └─────────────────────────────────────────────────────┘
 ```
