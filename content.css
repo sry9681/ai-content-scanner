@@ -241,7 +241,7 @@
   position: fixed;
   top: 0;
   right: 0;
-  width: 8px;
+  width: 16px;
   height: 100vh;
   z-index: 2147483645;
   pointer-events: none;
@@ -250,17 +250,15 @@
 .acs-scroll-marker {
   position: absolute;
   right: 0;
-  width: 8px;
-  height: 6px;
-  border-radius: 1px;
-  opacity: 0.85;
+  width: 16px;
+  height: 4px;
+  opacity: 0.9;
   pointer-events: auto;
   cursor: pointer;
-  transition: opacity 0.15s ease, transform 0.15s ease;
 }
 
 .acs-scroll-marker:hover {
   opacity: 1;
-  transform: scaleX(1.8);
-  transform-origin: right center;
+  height: 6px;
+  margin-top: -1px;
 }

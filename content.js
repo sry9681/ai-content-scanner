@@ -1045,7 +1045,8 @@
     // Remove red overlays
     document.querySelectorAll("." + OVERLAY_CLASS + "-text").forEach((el) => el.classList.remove(OVERLAY_CLASS + "-text"));
     document.querySelectorAll("." + OVERLAY_CLASS).forEach((el) => el.remove());
-    // Remove scrollbar markers
+    // Remove scrollbar markers and observers
+    teardownMarkerObservers();
     const existing = document.getElementById(MARKER_TRACK_ID);
     if (existing) existing.remove();
   }
@@ -1102,16 +1103,55 @@
       }
     }
 
-    // Scrollbar markers — only if page is scrollable
-    const pageScrollable = document.documentElement.scrollHeight > document.documentElement.clientHeight;
-    if (!pageScrollable) return;
+    renderScrollbarMarkers(aiResults);
+  }
 
-    const docHeight = document.documentElement.scrollHeight;
+  // ── Scrollbar marker rendering + live repositioning ──
+
+  let markerObserver = null;
+  let markerResizeObserver = null;
+  let markerRepositionTimer = null;
+  let trackedMarkerResults = [];
+
+  function renderScrollbarMarkers(aiResults) {
+    teardownMarkerObservers();
+    const existingTrack = document.getElementById(MARKER_TRACK_ID);
+    if (existingTrack) existingTrack.remove();
+
+    const pageScrollable = document.documentElement.scrollHeight > document.documentElement.clientHeight;
+    if (!pageScrollable || aiResults.length === 0) return;
+
+    trackedMarkerResults = aiResults;
+
     const track = document.createElement("div");
     track.id = MARKER_TRACK_ID;
+    positionMarkers(track, aiResults);
+    document.body.appendChild(track);
 
+    // Observe DOM mutations and resizes to reposition markers
+    const debouncedReposition = () => {
+      if (markerRepositionTimer) clearTimeout(markerRepositionTimer);
+      markerRepositionTimer = setTimeout(() => {
+        const t = document.getElementById(MARKER_TRACK_ID);
+        if (t && trackedMarkerResults.length > 0) {
+          t.textContent = "";
+          positionMarkers(t, trackedMarkerResults);
+        }
+      }, 300);
+    };
+
+    markerObserver = new MutationObserver(debouncedReposition);
+    markerObserver.observe(document.body, { childList: true, subtree: true });
+
+    markerResizeObserver = new ResizeObserver(debouncedReposition);
+    markerResizeObserver.observe(document.documentElement);
+  }
+
+  function positionMarkers(track, aiResults) {
+    const docHeight = document.documentElement.scrollHeight;
     for (const result of aiResults) {
       const el = result.element;
+      if (!el.isConnected) continue;
       const rect = el.getBoundingClientRect();
       const absTop = rect.top + window.scrollY;
       const pct = (absTop / docHeight) * 100;
@@ -1122,14 +1162,20 @@
       marker.style.background =
         result.verdict === "ai_detected" ? "#ef4444" : "#f59e0b";
 
-      marker.addEventListener("click", () => {
+      marker.addEventListener("click", (e) => {
+        e.stopPropagation();
         el.scrollIntoView({ behavior: "smooth", block: "center" });
       });
 
       track.appendChild(marker);
     }
+  }
 
-    document.body.appendChild(track);
+  function teardownMarkerObservers() {
+    if (markerObserver) { markerObserver.disconnect(); markerObserver = null; }
+    if (markerResizeObserver) { markerResizeObserver.disconnect(); markerResizeObserver = null; }
+    if (markerRepositionTimer) { clearTimeout(markerRepositionTimer); markerRepositionTimer = null; }
+    trackedMarkerResults = [];
   }
 
   async function updateAiHighlights() {
