@@ -31,7 +31,7 @@
     {
       "matches": ["<all_urls>"],
       "css": ["content.css"],
-      "js": ["content.js"],
+      "js": ["synthid-detect.js", "content.js"],
       "run_at": "document_idle"
     }
   ],
