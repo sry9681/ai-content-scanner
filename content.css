@@ -220,3 +220,33 @@
   padding-left: 12px !important;
   background: rgba(99, 102, 241, 0.04) !important;
 }
+
+/* ── Scrollbar markers ── */
+
+#acs-scrollbar-marker-track {
+  position: fixed;
+  top: 0;
+  right: 0;
+  width: 8px;
+  height: 100vh;
+  z-index: 2147483645;
+  pointer-events: none;
+}
+
+.acs-scroll-marker {
+  position: absolute;
+  right: 0;
+  width: 8px;
+  height: 6px;
+  border-radius: 1px;
+  opacity: 0.85;
+  pointer-events: auto;
+  cursor: pointer;
+  transition: opacity 0.15s ease, transform 0.15s ease;
+}
+
+.acs-scroll-marker:hover {
+  opacity: 1;
+  transform: scaleX(1.8);
+  transform-origin: right center;
+}

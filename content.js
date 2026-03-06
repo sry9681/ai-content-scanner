@@ -999,9 +999,73 @@
   //  MESSAGE HANDLING
   // ====================================================================
 
+  // ====================================================================
+  //  SCROLLBAR MARKERS
+  // ====================================================================
+
+  const MARKER_TRACK_ID = "acs-scrollbar-marker-track";
+
+  function removeScrollMarkers() {
+    const existing = document.getElementById(MARKER_TRACK_ID);
+    if (existing) existing.remove();
+  }
+
+  function renderScrollMarkers() {
+    removeScrollMarkers();
+
+    const aiResults = [
+      ...scanSummary.images,
+      ...scanSummary.videos,
+      ...scanSummary.text,
+    ].filter((r) => r.element && (r.verdict === "ai_detected" || r.verdict === "likely_ai"));
+
+    if (aiResults.length === 0) return;
+
+    const docHeight = document.documentElement.scrollHeight;
+    if (docHeight <= 0) return;
+
+    const track = document.createElement("div");
+    track.id = MARKER_TRACK_ID;
+
+    for (const result of aiResults) {
+      const el = result.element;
+      const rect = el.getBoundingClientRect();
+      const absTop = rect.top + window.scrollY;
+      const pct = (absTop / docHeight) * 100;
+
+      const marker = document.createElement("div");
+      marker.className = "acs-scroll-marker";
+      marker.style.top = pct + "%";
+      marker.style.background =
+        result.verdict === "ai_detected" ? "#ef4444" : "#f59e0b";
+
+      marker.addEventListener("click", () => {
+        el.scrollIntoView({ behavior: "smooth", block: "center" });
+      });
+
+      track.appendChild(marker);
+    }
+
+    document.body.appendChild(track);
+  }
+
+  async function updateScrollMarkers() {
+    const { scrollMarkerEnabled = false } = await chrome.storage.local.get("scrollMarkerEnabled");
+    if (scrollMarkerEnabled) {
+      renderScrollMarkers();
+    } else {
+      removeScrollMarkers();
+    }
+  }
+
+  // ====================================================================
+  //  MESSAGE HANDLING
+  // ====================================================================
+
   chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
     if (msg.type === "SCAN_PAGE") {
       scanPage().then((summary) => {
+        updateScrollMarkers();
         sendResponse({
           images: summary.images.map(stripElement),
           videos: summary.videos.map(stripElement),
@@ -1025,6 +1089,14 @@
         sendResponse(rest);
       });
       return true;
+    }
+
+    if (msg.type === "TOGGLE_SCROLL_MARKERS") {
+      if (msg.enabled) {
+        renderScrollMarkers();
+      } else {
+        removeScrollMarkers();
+      }
     }
   });
 })();

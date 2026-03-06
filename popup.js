@@ -15,6 +15,7 @@ const urlInput = document.getElementById("urlInput");
 const checkBtn = document.getElementById("checkBtn");
 const urlResultEl = document.getElementById("urlResult");
 const autoScanToggle = document.getElementById("autoScanToggle");
+const scrollMarkerToggle = document.getElementById("scrollMarkerToggle");
 
 const VERDICT_CONFIG = {
   ai_detected: { label: "AI Detected", dotClass: "dot-red", priority: 0, color: "#ef4444" },
@@ -32,6 +33,23 @@ const VERDICT_CONFIG = {
     const next = autoScanToggle.getAttribute("aria-pressed") !== "true";
     autoScanToggle.setAttribute("aria-pressed", String(next));
     await chrome.storage.local.set({ autoScanOnTabChange: next });
+  });
+})();
+
+// ── Scroll marker toggle: load saved setting and bind toggle ──
+(async function initScrollMarkerSetting() {
+  const { scrollMarkerEnabled = false } = await chrome.storage.local.get("scrollMarkerEnabled");
+  scrollMarkerToggle.setAttribute("aria-pressed", String(scrollMarkerEnabled));
+  scrollMarkerToggle.addEventListener("click", async () => {
+    const next = scrollMarkerToggle.getAttribute("aria-pressed") !== "true";
+    scrollMarkerToggle.setAttribute("aria-pressed", String(next));
+    await chrome.storage.local.set({ scrollMarkerEnabled: next });
+
+    // Immediately update markers on the active tab
+    const [tab] = await chrome.tabs.query({ active: true, currentWindow: true });
+    if (tab?.id) {
+      chrome.tabs.sendMessage(tab.id, { type: "TOGGLE_SCROLL_MARKERS", enabled: next });
+    }
   });
 })();
 
