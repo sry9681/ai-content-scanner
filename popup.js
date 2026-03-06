@@ -15,7 +15,7 @@ const urlInput = document.getElementById("urlInput");
 const checkBtn = document.getElementById("checkBtn");
 const urlResultEl = document.getElementById("urlResult");
 const autoScanToggle = document.getElementById("autoScanToggle");
-const scrollMarkerToggle = document.getElementById("scrollMarkerToggle");
+const highlightAiToggle = document.getElementById("highlightAiToggle");
 
 const VERDICT_CONFIG = {
   ai_detected: { label: "AI Detected", dotClass: "dot-red", priority: 0, color: "#ef4444" },
@@ -36,19 +36,19 @@ const VERDICT_CONFIG = {
   });
 })();
 
-// ── Scroll marker toggle: load saved setting and bind toggle ──
-(async function initScrollMarkerSetting() {
-  const { scrollMarkerEnabled = false } = await chrome.storage.local.get("scrollMarkerEnabled");
-  scrollMarkerToggle.setAttribute("aria-pressed", String(scrollMarkerEnabled));
-  scrollMarkerToggle.addEventListener("click", async () => {
-    const next = scrollMarkerToggle.getAttribute("aria-pressed") !== "true";
-    scrollMarkerToggle.setAttribute("aria-pressed", String(next));
-    await chrome.storage.local.set({ scrollMarkerEnabled: next });
+// ── Highlight AI toggle: load saved setting and bind toggle ──
+(async function initHighlightAiSetting() {
+  const { highlightAiEnabled = false } = await chrome.storage.local.get("highlightAiEnabled");
+  highlightAiToggle.setAttribute("aria-pressed", String(highlightAiEnabled));
+  highlightAiToggle.addEventListener("click", async () => {
+    const next = highlightAiToggle.getAttribute("aria-pressed") !== "true";
+    highlightAiToggle.setAttribute("aria-pressed", String(next));
+    await chrome.storage.local.set({ highlightAiEnabled: next });
 
-    // Immediately update markers on the active tab
+    // Immediately update highlights on the active tab
     const [tab] = await chrome.tabs.query({ active: true, currentWindow: true });
     if (tab?.id) {
-      chrome.tabs.sendMessage(tab.id, { type: "TOGGLE_SCROLL_MARKERS", enabled: next });
+      chrome.tabs.sendMessage(tab.id, { type: "TOGGLE_AI_HIGHLIGHT", enabled: next });
     }
   });
 })();

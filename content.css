@@ -221,6 +221,20 @@
   background: rgba(99, 102, 241, 0.04) !important;
 }
 
+/* ── AI highlight overlays ── */
+
+.acs-ai-overlay {
+  position: absolute;
+  background: rgba(239, 68, 68, 0.50);
+  z-index: 2147483639;
+  pointer-events: none;
+  border-radius: 2px;
+}
+
+.acs-ai-overlay-text {
+  background: rgba(239, 68, 68, 0.50) !important;
+}
+
 /* ── Scrollbar markers ── */
 
 #acs-scrollbar-marker-track {

@@ -899,16 +899,6 @@
   // ====================================================================
 
   async function scanPage() {
-    document.querySelectorAll(".acs-badge-wrapper, .acs-badge").forEach((el) => el.remove());
-    document.querySelectorAll(".acs-text-highlight").forEach((el) => {
-      el.classList.remove(
-        "acs-text-highlight",
-        "acs-text-ai-detected",
-        "acs-text-likely-ai",
-        "acs-text-uncertain"
-      );
-    });
-
     scanSummary = { images: [], videos: [], text: [] };
 
     const images = [...document.querySelectorAll("img")];
@@ -918,9 +908,6 @@
         if (result) {
           scannedElements.set(img, result);
           scanSummary.images.push(result);
-          if (result.verdict !== "no_metadata") {
-            attachBadgeToElement(img, result);
-          }
         }
       } catch (e) {
         console.warn("[AI Scanner] Error scanning image:", e);
@@ -934,9 +921,6 @@
         if (result) {
           scannedElements.set(video, result);
           scanSummary.videos.push(result);
-          if (result.verdict !== "no_metadata") {
-            attachBadgeToElement(video, result);
-          }
         }
       } catch (e) {
         console.warn("[AI Scanner] Error scanning video:", e);
@@ -970,9 +954,6 @@
         result.element = container;
         scannedElements.set(container, result);
         scanSummary.text.push(result);
-        if (result.verdict !== "likely_real") {
-          attachBadgeToElement(container, result);
-        }
       }
     }
 
@@ -995,35 +976,93 @@
     return rest;
   }
 
-  // ====================================================================
-  //  MESSAGE HANDLING
-  // ====================================================================
 
   // ====================================================================
-  //  SCROLLBAR MARKERS
+  //  AI HIGHLIGHT + SCROLLBAR MARKERS
   // ====================================================================
 
   const MARKER_TRACK_ID = "acs-scrollbar-marker-track";
+  const OVERLAY_CLASS = "acs-ai-overlay";
 
-  function removeScrollMarkers() {
-    const existing = document.getElementById(MARKER_TRACK_ID);
-    if (existing) existing.remove();
-  }
-
-  function renderScrollMarkers() {
-    removeScrollMarkers();
-
-    const aiResults = [
+  function getAiResults() {
+    return [
       ...scanSummary.images,
       ...scanSummary.videos,
       ...scanSummary.text,
     ].filter((r) => r.element && (r.verdict === "ai_detected" || r.verdict === "likely_ai"));
+  }
 
+  function removeAiHighlights() {
+    // Remove badges
+    document.querySelectorAll(".acs-badge-wrapper, .acs-badge").forEach((el) => el.remove());
+    document.querySelectorAll(".acs-text-highlight").forEach((el) => {
+      el.classList.remove("acs-text-highlight", "acs-text-ai-detected", "acs-text-likely-ai", "acs-text-uncertain");
+    });
+    // Remove red overlays
+    document.querySelectorAll("." + OVERLAY_CLASS + "-text").forEach((el) => el.classList.remove(OVERLAY_CLASS + "-text"));
+    document.querySelectorAll("." + OVERLAY_CLASS).forEach((el) => el.remove());
+    // Remove scrollbar markers
+    const existing = document.getElementById(MARKER_TRACK_ID);
+    if (existing) existing.remove();
+  }
+
+  function renderAiHighlights() {
+    removeAiHighlights();
+
+    // Attach badges for all scanned results
+    for (const result of scanSummary.images) {
+      if (result.element && result.verdict !== "no_metadata") {
+        attachBadgeToElement(result.element, result);
+      }
+    }
+    for (const result of scanSummary.videos) {
+      if (result.element && result.verdict !== "no_metadata") {
+        attachBadgeToElement(result.element, result);
+      }
+    }
+    for (const result of scanSummary.text) {
+      if (result.element && result.verdict !== "likely_real") {
+        attachBadgeToElement(result.element, result);
+      }
+    }
+
+    const aiResults = getAiResults();
     if (aiResults.length === 0) return;
 
-    const docHeight = document.documentElement.scrollHeight;
-    if (docHeight <= 0) return;
+    // Red overlays on detected elements
+    for (const result of aiResults) {
+      const el = result.element;
+      const rect = el.getBoundingClientRect();
+      if (rect.width === 0 && rect.height === 0) continue;
 
+      const parent = el.parentElement || el.offsetParent || document.body;
+      if (parent && getComputedStyle(parent).position === "static") {
+        parent.style.position = "relative";
+      }
+
+      const overlay = document.createElement("div");
+      overlay.className = OVERLAY_CLASS;
+
+      if (result.type === "text") {
+        // For text blocks, use a matching overlay via the element itself
+        el.classList.add(OVERLAY_CLASS + "-text");
+      } else {
+        // For images/videos, position an overlay div over the element
+        const elRect = el.getBoundingClientRect();
+        const parentRect = parent.getBoundingClientRect();
+        overlay.style.top = (elRect.top - parentRect.top) + "px";
+        overlay.style.left = (elRect.left - parentRect.left) + "px";
+        overlay.style.width = elRect.width + "px";
+        overlay.style.height = elRect.height + "px";
+        parent.appendChild(overlay);
+      }
+    }
+
+    // Scrollbar markers — only if page is scrollable
+    const pageScrollable = document.documentElement.scrollHeight > document.documentElement.clientHeight;
+    if (!pageScrollable) return;
+
+    const docHeight = document.documentElement.scrollHeight;
     const track = document.createElement("div");
     track.id = MARKER_TRACK_ID;
 
@@ -1049,12 +1088,12 @@
     document.body.appendChild(track);
   }
 
-  async function updateScrollMarkers() {
-    const { scrollMarkerEnabled = false } = await chrome.storage.local.get("scrollMarkerEnabled");
-    if (scrollMarkerEnabled) {
-      renderScrollMarkers();
+  async function updateAiHighlights() {
+    const { highlightAiEnabled = false } = await chrome.storage.local.get("highlightAiEnabled");
+    if (highlightAiEnabled) {
+      renderAiHighlights();
     } else {
-      removeScrollMarkers();
+      removeAiHighlights();
     }
   }
 
@@ -1065,7 +1104,7 @@
   chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
     if (msg.type === "SCAN_PAGE") {
       scanPage().then((summary) => {
-        updateScrollMarkers();
+        updateAiHighlights();
         sendResponse({
           images: summary.images.map(stripElement),
           videos: summary.videos.map(stripElement),
@@ -1091,11 +1130,11 @@
       return true;
     }
 
-    if (msg.type === "TOGGLE_SCROLL_MARKERS") {
+    if (msg.type === "TOGGLE_AI_HIGHLIGHT") {
       if (msg.enabled) {
-        renderScrollMarkers();
+        renderAiHighlights();
       } else {
-        removeScrollMarkers();
+        removeAiHighlights();
       }
     }
   });
