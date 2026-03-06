@@ -450,16 +450,25 @@
       result.fingerprint.iptcDigitalSource = meta.iptcDigitalSource;
     }
 
-    // 3) SynthID
-    const textScan = new TextDecoder("ascii", { fatal: false }).decode(
-      new Uint8Array(buffer).subarray(0, Math.min(buffer.byteLength, 200_000))
-    );
-    if (/synthid/i.test(textScan)) {
-      signals.synthid = true;
-      result.verdict = "ai_detected";
-      result.reasons.push("Google SynthID marker reference found in metadata.");
-      result.fingerprint.synthid = "SynthID reference detected";
-      result.source = result.source || "Google (SynthID)";
+    // 3) SynthID watermark detection (FFT phase analysis)
+    //    Use the already-fetched buffer (CORS-safe) instead of the img element
+    if (window.__acsSynthID && buffer) {
+      try {
+        const synthResult = await window.__acsSynthID.detectSynthIDWatermark(buffer);
+        if (synthResult.detected) {
+          signals.synthid = true;
+          result.verdict = "ai_detected";
+          result.reasons.push(
+            "SynthID watermark detected via spectral analysis" +
+            (synthResult.codebook ? " (" + synthResult.codebook + ")" : "") +
+            "."
+          );
+          result.fingerprint.synthid = "SynthID watermark confirmed";
+          result.source = result.source || synthResult.source;
+        }
+      } catch (e) {
+        // SynthID detection failed silently — continue with other signals
+      }
     }
 
     // 4) URL patterns
