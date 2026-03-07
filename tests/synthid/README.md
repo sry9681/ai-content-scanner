@@ -157,6 +157,11 @@ A real AI-generated portrait photo from Gemini at 768x1365 resolution (non-squar
 
 - **Result**: NOT detected by Tier A (false negative). Phase match: 0.563. Only 6/10 carriers matched. Magnitude ratio: 0.89x (watermark signal not above background). The non-square aspect ratio means center-cropping discards significant portions of the image, and the remaining portion's natural content masks the watermark's magnitude signature. Tier B and C detect this image because they use noise-domain analysis which isolates the watermark from image content, but at the cost of more false positives.
 
+#### `Gemini_Generated_image_compressed_resized.jpg` — CDN-processed Gemini preview (1024x559)
+A Gemini-generated image as served by Google's CDN (`lh3.googleusercontent.com`) with `=s1024-rj` parameters — resized to 1024px max and re-encoded as JPEG. This is what the extension sees when scanning the gemini.google.com page directly (as opposed to scanning the downloaded file).
+
+- **Result**: NOT detected by Tier A (false negative). Phase match: 0.525. Only 4/10 carriers matched. Magnitude ratio: 0.94x. The CDN's resize + JPEG re-encoding degrades the watermark signal below threshold. Tier C (wavelet) detects it at 0.679 phase match, but Tier C has too many false positives for production use. This confirms that Google's CDN image processing is a hard limitation — the URL tokens are cryptographically bound to the size/format parameters and cannot be modified to retrieve the original.
+
 ### Control Images (Expected: not detected)
 
 #### `sample_cleaned.png` — Watermark-removed version (1208x2152)
@@ -217,15 +222,16 @@ Four detection approaches were evaluated, from simplest to most complex:
 ```
   Tier                           Accuracy   Avg Time   FP   FN
   ────────────────────────────── ────────── ────────── ──── ────
-  A: Raw FFT phase+mag           12/13          1.9ms   0    1
-  B: Highpass + FFT              7/13          1.9ms   6    0
-  C: Wavelet + FFT               9/13         20.2ms   4    0
-  D: Combined A+B                10/13          3.8ms   2    1
+  A: Raw FFT phase+mag           18/19          4.0ms   0    1
+  B: Highpass + FFT              11/19          2.0ms   7    1
+  C: Wavelet + FFT               13/19         11.6ms   6    0
+  D: Combined A+B                15/19          3.4ms   3    1
 ```
 
 - **FP** = false positive (non-watermarked image incorrectly flagged)
 - **FN** = false negative (watermarked image missed)
-- **13 total images**: 4 watermarked, 1 cleaned, 8 generated controls
+- **19 total images**: 6 watermarked, 5 control/cleaned, 8 generated controls
+- Tier A FN: `Gemini_Generated_image_compressed_resized.jpg` — CDN-processed preview with lossy re-encoding
 
 ---
 
@@ -361,6 +367,8 @@ This ensures the most definitive evidence is always visible first in the collaps
 5. **Codebook staleness**: If Google changes SynthID's carrier frequencies or phase values in a future model version, images from that version won't be detected until a new codebook entry is added.
 
 6. **CORS constraints**: The detector needs pixel data, which means the image bytes must be fetchable. The extension handles this via its background worker CORS proxy (`FETCH_IMAGE` message), passing the `ArrayBuffer` to the detector.
+
+7. **Google CDN image previews (gemini.google.com)**: Images displayed on gemini.google.com are served through `lh3.googleusercontent.com` with URL parameters like `=s1024-rj` that resize and re-encode to JPEG. This lossy CDN processing degrades the watermark below our detection threshold (phase match drops from ~0.8 to ~0.52, only 4/10 carriers matched). The URL parameters cannot be modified to retrieve the original — Google's CDN ties the token/signature to the specific size and format, blocking unauthorized parameter changes. The full-resolution downloaded image (via the download button) retains the watermark and detects correctly. This is a platform-specific limitation, not a flaw in the detection algorithm.
 
 ---
 
